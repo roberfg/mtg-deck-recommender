@@ -27,3 +27,4 @@ htmlcov/
 deck_data*.csv
 deck_analysis*.csv
 deck_recommendations*.md
+exports/

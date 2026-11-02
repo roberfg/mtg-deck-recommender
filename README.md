@@ -28,7 +28,9 @@ En cada ejecución se generan:
 
 - `deck_data_<format>.csv`: todas las filas extraídas de MTGDecks, incluidos los precios `Paper` y `MTGO`.
 - `deck_analysis_<format>.csv`: filas válidas con las puntuaciones y el IVC.
-- `deck_recommendations.md`: informe Markdown con las recomendaciones y el ranking completo de todos los formatos.
+- `exports/deck_recommendations.md`: informe Markdown predeterminado con las recomendaciones y el ranking completo de todos los formatos.
+- `exports/deck_recommendations_cheap.md`: informe Markdown generado con `--cheap`.
+- `exports/deck_recommendations_best.md`: informe Markdown generado con `--best`.
 
 Estos archivos están excluidos de Git mediante `.gitignore`.
 

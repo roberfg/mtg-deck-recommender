@@ -64,7 +64,7 @@ La primera recomendación siempre es el mazo con el IVC más alto. Los empates s
 
 - `deck_data_<format>.csv`: todas las filas extraídas, con una columna `format` añadida.
 - `deck_analysis_<format>.csv`: filas válidas con puntuaciones e IVC.
-- `deck_recommendations_<format>.md`: informe del formato, con recomendaciones y ranking completo.
-- `deck_recommendations.md`: informe combinado cuando se usa `--all`.
+- `exports/deck_recommendations_<format>.md`: informe del formato, con recomendaciones y ranking completo.
+- `exports/deck_recommendations.md`: informe combinado cuando se usa `--all`.
 
 Los archivos generados están excluidos mediante `.gitignore`. Las dependencias están en `requirements.txt` y son `pandas`, `requests`, `beautifulsoup4` y `tabulate`.

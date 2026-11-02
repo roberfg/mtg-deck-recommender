@@ -6,6 +6,7 @@ import argparse
 import math
 import re
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -327,11 +328,15 @@ def main() -> None:
         print(f"Análisis guardado en: {analysis_output}")
         reports.append(build_markdown_report(format_name, raw, scored, median_price, profile_weights))
 
-    report_output = "deck_recommendations.md"
+    profile_name = "cheap" if args.cheap else "best" if args.best else ""
+    report_output = f"deck_recommendations{f'_{profile_name}' if profile_name else ''}.md"
     report_header = "# Recomendaciones de mazos\n\nPeriodo: últimos 30 días\n\n"
-    with open(report_output, "w", encoding="utf-8") as report_file:
+    export_directory = Path("exports")
+    export_directory.mkdir(exist_ok=True)
+    report_path = export_directory / report_output
+    with report_path.open("w", encoding="utf-8") as report_file:
         report_file.write(report_header + "\n".join(reports))
-    print(f"Informe Markdown guardado en: {report_output}")
+    print(f"Informe Markdown guardado en: {report_path}")
 
 
 if __name__ == "__main__":
