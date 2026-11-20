@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import math
 import re
+import sys
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -28,13 +28,19 @@ BEST_WEIGHTS = {
     "trend_score": 0.05,
 }
 CHEAP_WEIGHTS = {
-        "price_score": 0.80,
-        "conversion_score": 0.10,
-        "winrate_score": 0.05,
-        "trend_score": 0.05,
+    "price_score": 0.80,
+    "conversion_score": 0.10,
+    "winrate_score": 0.05,
+    "trend_score": 0.05,
 }
-WEIGHTS = BEST_WEIGHTS
-FORMAT_WEIGHTS = {"standard": CHEAP_WEIGHTS}
+PROFILES = {"cheap": CHEAP_WEIGHTS, "best": BEST_WEIGHTS}
+TIERS = {"A"}
+MIX_INTRO = (
+    "Criterio: si un mazo está entre la primera y la segunda recomendación de ambos perfiles, "
+    "se elige ese mazo. Si varios coinciden, gana el de menor suma de posiciones y, en empate, "
+    "el de precio Paper más bajo. Si no hay coincidencia, se elige el mazo con menor arrepentimiento "
+    "máximo: la diferencia entre el IVC del mejor mazo de cada perfil y el IVC del candidato.\n\n"
+)
 
 
 def parse_number(value: str | None) -> float | None:
@@ -114,9 +120,8 @@ def relative_price_score(prices: pd.Series) -> tuple[pd.Series, float]:
 
 def calculate_ivc(
     dataframe: pd.DataFrame,
-    tiers: set[str] | None = None,
-    format_name: str | None = None,
-    weights: dict[str, float] | None = None,
+    weights: dict[str, float],
+    tiers: set[str],
 ) -> tuple[pd.DataFrame, float]:
     """Filtra los datos válidos y calcula las puntuaciones y el IVC."""
     required = ["winrate_pct", "top25_conversion", "paper_price_usd"]
@@ -124,9 +129,8 @@ def calculate_ivc(
         (dataframe["name"].str.lower() != "rogue")
         & dataframe[required].notna().all(axis=1)
         & (dataframe["paper_price_usd"] > 0)
+        & dataframe["tier"].isin(tiers)
     )
-    if tiers is not None:
-        valid_mask &= dataframe["tier"].isin(tiers)
     valid = dataframe[valid_mask].copy()
     if valid.empty:
         raise ValueError("No hay mazos con precio Paper, winrate y conversión válidos.")
@@ -135,8 +139,7 @@ def calculate_ivc(
     valid["conversion_score"] = normalize_series(valid["top25_conversion"])
     valid["winrate_score"] = normalize_series(valid["winrate_pct"])
     valid["trend_score"] = normalize_series(valid["trend_pct"].fillna(0))
-    selected_weights = weights or FORMAT_WEIGHTS.get(format_name, WEIGHTS)
-    valid["ivc"] = sum(valid[column] * weight for column, weight in selected_weights.items())
+    valid["ivc"] = sum(valid[column] * weight for column, weight in weights.items())
     valid = valid.sort_values(["ivc", "paper_price_usd"], ascending=[False, True]).reset_index(drop=True)
     return valid, median_price
 
@@ -154,6 +157,56 @@ def select_second_recommendation(dataframe: pd.DataFrame, first: pd.Series) -> p
     return alternatives.sort_values(["ivc", "paper_price_usd"], ascending=[False, True]).iloc[0]
 
 
+def top_two_names(scored: pd.DataFrame) -> list[str]:
+    """Devuelve la primera y segunda recomendación de un perfil."""
+    first = select_recommendation(scored)
+    second = select_second_recommendation(scored, first)
+    names = [first["name"]]
+    if second is not None:
+        names.append(second["name"])
+    return names
+
+
+def find_deck(dataframe: pd.DataFrame, name: str) -> pd.Series:
+    """Busca la fila de un mazo por nombre."""
+    return dataframe[dataframe["name"] == name].iloc[0]
+
+
+def rank_of(dataframe: pd.DataFrame, name: str) -> int:
+    """Devuelve la posición de un mazo en el ranking ordenado por IVC."""
+    return int(dataframe.index[dataframe["name"] == name][0]) + 1
+
+
+def choose_mix_deck(cheap: pd.DataFrame, best: pd.DataFrame) -> tuple[str, str]:
+    """Elige un mazo combinando las recomendaciones de ambos perfiles."""
+    cheap_pool = top_two_names(cheap)
+    best_pool = top_two_names(best)
+    overlap = [name for name in cheap_pool if name in best_pool]
+    if overlap:
+        name = min(
+            overlap,
+            key=lambda deck: (
+                rank_of(cheap, deck) + rank_of(best, deck),
+                find_deck(cheap, deck)["paper_price_usd"],
+            ),
+        )
+        return name, "Recomendado en ambos perfiles"
+
+    best_ivc = {"cheap": cheap["ivc"].max(), "best": best["ivc"].max()}
+
+    def max_regret(deck: str) -> float:
+        return max(
+            best_ivc["cheap"] - find_deck(cheap, deck)["ivc"],
+            best_ivc["best"] - find_deck(best, deck)["ivc"],
+        )
+
+    name = min(
+        cheap_pool + best_pool,
+        key=lambda deck: (max_regret(deck), find_deck(cheap, deck)["paper_price_usd"]),
+    )
+    return name, "Sin coincidencia: menor arrepentimiento máximo"
+
+
 def dataframe_markdown(dataframe: pd.DataFrame, columns: list[str]) -> str:
     """Convierte columnas del dataframe a una tabla Markdown legible."""
     display = dataframe[columns].astype(object).copy()
@@ -166,17 +219,16 @@ def build_markdown_report(
     raw: pd.DataFrame,
     scored: pd.DataFrame,
     median_price: float,
-    weights: dict[str, float] | None = None,
+    weights: dict[str, float],
 ) -> str:
-    """Genera el informe Markdown de un formato."""
+    """Genera el informe Markdown de un formato y un perfil."""
     recommendation = select_recommendation(scored)
     second_recommendation = select_second_recommendation(scored, recommendation)
-    selected_weights = weights or FORMAT_WEIGHTS.get(format_name, WEIGHTS)
     weight_summary = (
-        f"precio {selected_weights['price_score']:.0%}, "
-        f"conversión Top 25% {selected_weights['conversion_score']:.0%}, "
-        f"winrate {selected_weights['winrate_score']:.0%}, "
-        f"trend {selected_weights['trend_score']:.0%}"
+        f"precio {weights['price_score']:.0%}, "
+        f"conversión Top 25% {weights['conversion_score']:.0%}, "
+        f"winrate {weights['winrate_score']:.0%}, "
+        f"trend {weights['trend_score']:.0%}"
     )
     second_name = second_recommendation["name"] if second_recommendation is not None else "No disponible"
     second_details = ""
@@ -187,15 +239,6 @@ def build_markdown_report(
 - Conversión Top 25%: **{second_recommendation['top25_conversion']:.2f}x**
 - Trend: **{second_recommendation['trend_pct']:+.2f}%**
 """
-    raw_columns = [
-        "name", "meta_share_pct", "trend_pct", "tier", "winrate_pct",
-        "top25_conversion", "decks", "paper_price_usd", "mtgo_price_usd",
-    ]
-    scored_columns = [
-        "name", "tier", "decks", "paper_price_usd", "winrate_pct",
-        "top25_conversion", "trend_pct", "price_score", "conversion_score",
-        "winrate_score", "trend_score", "ivc",
-    ]
     warning = ""
     if recommendation["decks"] < 10:
         warning = (
@@ -226,14 +269,68 @@ def build_markdown_report(
 
 **{second_name}**
 {second_details}
+"""
 
-### Ranking completo
 
-{dataframe_markdown(scored, scored_columns)}
+def build_mix_markdown(
+    format_name: str,
+    raw: pd.DataFrame,
+    cheap: pd.DataFrame,
+    best: pd.DataFrame,
+    median_price: float,
+    mix_name: str,
+    mix_reason: str,
+) -> str:
+    """Genera la sección de mezcla de un formato."""
+    chosen_cheap = find_deck(cheap, mix_name)
+    chosen_best = find_deck(best, mix_name)
+    warning = ""
+    if chosen_cheap["decks"] < 10:
+        warning = (
+            f"\n> Advertencia: este arquetipo solo tiene {int(chosen_cheap['decks'])} listas "
+            "registradas; su IVC es menos confiable.\n"
+        )
 
-### Datos extraídos
+    candidates = []
+    for name in dict.fromkeys(top_two_names(cheap) + top_two_names(best)):
+        candidate_cheap = find_deck(cheap, name)
+        candidate_best = find_deck(best, name)
+        candidates.append(
+            {
+                "Mazo": name,
+                "Posición cheap": rank_of(cheap, name),
+                "Posición best": rank_of(best, name),
+                "IVC cheap": candidate_cheap["ivc"],
+                "IVC best": candidate_best["ivc"],
+                "Precio Paper": candidate_cheap["paper_price_usd"],
+            }
+        )
+    candidate_table = dataframe_markdown(pd.DataFrame(candidates), list(candidates[0].keys()))
 
-{dataframe_markdown(raw, raw_columns)}
+    return f"""## {format_name.title()}
+
+### Resumen
+
+- Mazos extraídos: {len(raw)}
+- Mazos válidos incluidos: {len(cheap)}
+- Precio Paper mediano: ${median_price:.2f}
+
+### Recomendación final
+
+**{mix_name}**
+
+- Criterio: {mix_reason}
+- Posición cheap: **#{rank_of(cheap, mix_name)}** (IVC {chosen_cheap['ivc']:.2f})
+- Posición best: **#{rank_of(best, mix_name)}** (IVC {chosen_best['ivc']:.2f})
+- Precio Paper: **${chosen_cheap['paper_price_usd']:.2f}**
+- Winrate: **{chosen_cheap['winrate_pct']:.0f}%**
+- Conversión Top 25%: **{chosen_cheap['top25_conversion']:.2f}x**
+- Trend: **{chosen_cheap['trend_pct']:+.2f}%**
+{warning}
+### Candidatos
+
+{candidate_table}
+
 """
 
 
@@ -248,96 +345,104 @@ def fetch_html(url: str) -> str:
     return response.text
 
 
-def print_report(
+def log(format_name: str, message: str) -> None:
+    """Muestra un mensaje de progreso asociado a un formato."""
+    print(f"[{format_name.title()}] {message}")
+
+
+def warn_low_sample(format_name: str, label: str, deck: pd.Series) -> None:
+    """Avisa en consola cuando un mazo recomendado tiene pocas listas."""
+    if deck["decks"] < 10:
+        log(
+            format_name,
+            f"ADVERTENCIA ({label}): {deck['name']} solo tiene {int(deck['decks'])} listas; "
+            "su IVC es menos confiable.",
+        )
+
+
+def write_report(path: Path, title: str, body: str) -> None:
+    """Escribe un informe Markdown con cabecera común."""
+    with path.open("w", encoding="utf-8") as report_file:
+        report_file.write(f"# {title}\n\nPeriodo: últimos 30 días\n\n{body}")
+
+
+def process_format(
     format_name: str,
-    raw: pd.DataFrame,
-    scored: pd.DataFrame,
-    median_price: float,
-    top: int,
-) -> None:
-    """Muestra el dataframe extraído y el ranking calculado."""
-    recommendation = select_recommendation(scored)
-    second_recommendation = select_second_recommendation(scored, recommendation)
-    print(f"\n=== {format_name.title()} ===")
-    print(f"Mazos extraídos: {len(raw)}")
-    print(f"Mazos válidos incluidos para el IVC: {len(scored)}")
-    print(f"Precio Paper mediano: ${median_price:.2f}")
-    print("\nRecomendación principal:")
-    print(
-        f"  {recommendation['name']} | IVC {recommendation['ivc']:.2f} | "
-        f"Paper ${recommendation['paper_price_usd']:.2f} | "
-        f"Winrate {recommendation['winrate_pct']:.0f}% | "
-        f"Top 25% {recommendation['top25_conversion']:.2f}x"
-    )
-    second_name = second_recommendation["name"] if second_recommendation is not None else "No disponible"
-    print("\nSegunda recomendación:")
-    print(f"  {second_name}")
-    if second_recommendation is not None:
-        print(
-            f"  IVC {second_recommendation['ivc']:.2f} | "
-            f"Paper ${second_recommendation['paper_price_usd']:.2f} | "
-            f"Winrate {second_recommendation['winrate_pct']:.0f}% | "
-            f"Top 25% {second_recommendation['top25_conversion']:.2f}x | "
-            f"Trend {second_recommendation['trend_pct']:+.2f}%"
-        )
-    if recommendation["decks"] < 10:
-        print(
-            f"  Advertencia: este arquetipo solo tiene {int(recommendation['decks'])} listas; "
-            "su IVC es menos confiable que el de mazos con más resultados."
-        )
-    print("\nRanking:")
-    columns = [
-        "name", "tier", "paper_price_usd", "winrate_pct", "top25_conversion",
-        "trend_pct", "price_score", "conversion_score", "winrate_score", "trend_score", "ivc",
-    ]
-    display = scored[columns].head(top).copy()
-    print(display.to_string(index=False, float_format=lambda value: f"{value:.2f}"))
+    url: str,
+    export_directory: Path,
+) -> tuple[dict[str, str], str]:
+    """Procesa un formato completo y devuelve sus informes Markdown por perfil y de mezcla."""
+    log(format_name, "Descargando datos de MTGDecks...")
+    raw = parse_decks(fetch_html(url))
+    raw.insert(0, "format", format_name)
+    raw.to_csv(export_directory / f"deck_data_{format_name}.csv", index=False)
+
+    log(format_name, "Analizando mazos de los últimos 30 días...")
+    scored_by_profile: dict[str, pd.DataFrame] = {}
+    markdown_by_profile: dict[str, str] = {}
+    median_price = 0.0
+    for profile, weights in PROFILES.items():
+        scored, median_price = calculate_ivc(raw, weights, TIERS)
+        scored.to_csv(export_directory / f"deck_analysis_{format_name}_{profile}.csv", index=False)
+        warn_low_sample(format_name, profile, select_recommendation(scored))
+        markdown_by_profile[profile] = build_markdown_report(format_name, raw, scored, median_price, weights)
+        scored_by_profile[profile] = scored
+
+    cheap = scored_by_profile["cheap"]
+    best = scored_by_profile["best"]
+    mix_name, mix_reason = choose_mix_deck(cheap, best)
+    warn_low_sample(format_name, "final", find_deck(cheap, mix_name))
+    mix_markdown = build_mix_markdown(format_name, raw, cheap, best, median_price, mix_name, mix_reason)
+    log(format_name, f"Completado: {len(raw)} mazos extraídos, {len(cheap)} válidos.")
+    return markdown_by_profile, mix_markdown
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Recomienda mazos en los cinco formatos disponibles.")
-    profile_group = parser.add_mutually_exclusive_group()
-    profile_group.add_argument(
-        "--cheap",
-        action="store_true",
-        help="Aplica la ponderación orientada al precio a todos los formatos.",
-    )
-    profile_group.add_argument(
-        "--best",
-        action="store_true",
-        help="Aplica la ponderación orientada al rendimiento a todos los formatos.",
-    )
-    args = parser.parse_args()
-
-    profile_weights = CHEAP_WEIGHTS if args.cheap else BEST_WEIGHTS if args.best else None
-    selected_tiers = {"A"}
-    formats = list(FORMAT_URLS)
-    reports: list[str] = []
-    for format_name in formats:
-        url = FORMAT_URLS[format_name]
-        analysis_output = f"deck_analysis_{format_name}.csv"
-        raw_output = f"deck_data_{format_name}.csv"
-
-        raw = parse_decks(fetch_html(url))
-        raw.insert(0, "format", format_name)
-        scored, median_price = calculate_ivc(raw, selected_tiers, format_name, profile_weights)
-        raw.to_csv(raw_output, index=False)
-        scored.to_csv(analysis_output, index=False)
-        print_report(format_name, raw, scored, median_price, 10)
-        print(f"Datos originales guardados en: {raw_output}")
-        print(f"Análisis guardado en: {analysis_output}")
-        reports.append(build_markdown_report(format_name, raw, scored, median_price, profile_weights))
-
-    profile_name = "cheap" if args.cheap else "best" if args.best else ""
-    report_output = f"deck_recommendations{f'_{profile_name}' if profile_name else ''}.md"
-    report_header = "# Recomendaciones de mazos\n\nPeriodo: últimos 30 días\n\n"
+def main() -> int:
     export_directory = Path("exports")
     export_directory.mkdir(exist_ok=True)
-    report_path = export_directory / report_output
-    with report_path.open("w", encoding="utf-8") as report_file:
-        report_file.write(report_header + "\n".join(reports))
-    print(f"Informe Markdown guardado en: {report_path}")
+    reports: dict[str, list[str]] = {profile: [] for profile in PROFILES}
+    mix_sections: list[str] = []
+    failed_formats: list[str] = []
+
+    for format_name, url in FORMAT_URLS.items():
+        try:
+            markdown_by_profile, mix_markdown = process_format(format_name, url, export_directory)
+        except Exception as error:
+            failed_formats.append(format_name)
+            print(f"[{format_name.title()}] ERROR: {error}. Formato omitido.")
+            continue
+        for profile, markdown in markdown_by_profile.items():
+            reports[profile].append(markdown)
+        mix_sections.append(mix_markdown)
+
+    if not mix_sections:
+        print("\nERROR: ningún formato se completó; no se generaron informes.")
+        return 1
+
+    print("\nGenerando informes...")
+    for profile in PROFILES:
+        write_report(
+            export_directory / f"deck_recommendations_{profile}.md",
+            "Recomendaciones de mazos",
+            "\n".join(reports[profile]),
+        )
+    write_report(
+        export_directory / "deck_recommendations_final.md",
+        "Recomendación final",
+        MIX_INTRO + "\n".join(mix_sections),
+    )
+
+    completed = len(mix_sections)
+    total = len(FORMAT_URLS)
+    print(f"\nResumen: {completed} de {total} formatos completados.")
+    if failed_formats:
+        names = ", ".join(name.title() for name in failed_formats)
+        print(f"Formatos con error: {names}.")
+        print(f"Informes guardados en {export_directory}/ con los formatos completados.")
+        return 1
+    print(f"Ejecución completada correctamente. Informes guardados en {export_directory}/.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -18,11 +18,11 @@ El precio utilizado para el cálculo es siempre `Paper`. El precio `MTGO` se con
 
 ## Ejecución y alcance
 
-- `python deck_recommender.py` analiza los cinco formatos disponibles.
-- `python deck_recommender.py --cheap` aplica la ponderación de Standard a todos los formatos.
-- `python deck_recommender.py --best` aplica la ponderación competitiva a todos los formatos, incluido Standard.
-- `--cheap` y `--best` son opcionales y mutuamente excluyentes.
-- Se consideran únicamente los mazos de tier A y se muestran los 10 primeros puestos en la salida de terminal.
+- `python deck_recommender.py` analiza los cinco formatos disponibles y genera en una sola ejecución los informes `cheap`, `best` y `final`.
+- No hay flags. El perfil `cheap` aplica la ponderación de precio a todos los formatos, incluido Standard. El perfil `best` aplica la ponderación competitiva a todos los formatos, incluido Standard.
+- Se consideran únicamente los mazos de tier A.
+- La salida de terminal solo muestra mensajes de progreso por formato, advertencias y errores; no muestra tablas ni rankings de mazos, que se consultan en los informes Markdown y CSV.
+- Si un formato falla, se muestra el error con su formato y se continúa con los demás. El código de salida es distinto de 0 si algún formato falla, y 1 si ninguno se completa.
 - El periodo de análisis es siempre de los últimos 30 días.
 
 ## Reglas de filtrado
@@ -32,7 +32,7 @@ El precio utilizado para el cálculo es siempre `Paper`. El precio `MTGO` se con
 - `--tiers all` no aplica filtro de tier e incluye todos los valores publicados.
 - Se excluye el arquetipo `Rogue`.
 - Se excluyen filas sin winrate, conversión Top 25% o precio `Paper` válido y positivo.
-- Los mazos con pocas listas pueden aparecer, pero el informe advierte cuando la recomendación tiene menos de 10 listas.
+- Los mazos con pocas listas pueden aparecer, pero el informe y la consola advierten cuando la recomendación tiene menos de 10 listas.
 
 ## Cálculo del IVC
 
@@ -45,7 +45,7 @@ IVC = puntuación de precio * 0.30
     + puntuación de trend * 0.05
 ```
 
-Para Standard, por el riesgo de rotación:
+Perfil `cheap` (todos los formatos):
 
 ```text
 IVC = puntuación de precio * 0.80
@@ -54,17 +54,33 @@ IVC = puntuación de precio * 0.80
     + puntuación de trend * 0.05
 ```
 
-Todas las métricas se normalizan entre 1 y 10. La puntuación del precio usa la mediana de los precios `Paper` válidos, no la media aritmética. La mediana recibe 5 puntos, los precios más bajos obtienen mejor puntuación y el resultado queda limitado entre 1 y 10.
+Perfil `best` (todos los formatos):
 
-Las ponderaciones generales del IVC son: precio 30%, conversión Top 25% 35%, winrate 30% y trend 5%. Standard usa precio 80%, conversión Top 25% 10%, winrate 5% y trend 5%.
+```text
+IVC = puntuación de precio * 0.30
+    + puntuación de conversión Top 25% * 0.35
+    + puntuación de winrate * 0.30
+    + puntuación de trend * 0.05
+```
+
+Todas las métricas se normalizan entre 1 y 10. La puntuación del precio usa la mediana de los precios `Paper` válidos, no la media aritmética. La mediana recibe 5 puntos, los precios más bajos obtienen mejor puntuación y el resultado queda limitado entre 1 y 10.
 
 La primera recomendación siempre es el mazo con el IVC más alto. Los empates se resuelven con el precio `Paper` más bajo. La segunda recomendación es el siguiente mazo distinto del ranking y se muestra con sus métricas principales.
 
+## Recomendación final
+
+Para cada formato se toman la primera y segunda recomendación de cada perfil (hasta cuatro mazos):
+
+- Si un mazo aparece en ambos perfiles, se elige ese. Si coinciden varios, gana el de menor suma de posiciones en ambos rankings y, en empate, el de precio `Paper` más bajo.
+- Si no hay coincidencia, se elige el mazo con menor arrepentimiento máximo. El arrepentimiento de un candidato en un perfil es el IVC máximo de ese perfil menos el IVC del candidato; se toma el máximo entre ambos perfiles y gana el mínimo.
+- Los IVC de `cheap` y `best` no se comparan directamente porque usan ponderaciones distintas.
+
 ## Archivos generados
 
-- `deck_data_<format>.csv`: todas las filas extraídas, con una columna `format` añadida.
-- `deck_analysis_<format>.csv`: filas válidas con puntuaciones e IVC.
-- `exports/deck_recommendations_<format>.md`: informe del formato, con recomendaciones y ranking completo.
-- `exports/deck_recommendations.md`: informe combinado cuando se usa `--all`.
+- `exports/deck_data_<format>.csv`: todas las filas extraídas, con una columna `format` añadida.
+- `exports/deck_analysis_<format>_cheap.csv` y `exports/deck_analysis_<format>_best.csv`: filas válidas con puntuaciones e IVC de cada perfil.
+- `exports/deck_recommendations_cheap.md`: informe combinado del perfil `cheap`, con el resumen y las recomendaciones de cada formato.
+- `exports/deck_recommendations_best.md`: informe combinado del perfil `best`, con el mismo contenido.
+- `exports/deck_recommendations_final.md`: informe combinado con la recomendación final de cada formato y los candidatos.
 
 Los archivos generados están excluidos mediante `.gitignore`. Las dependencias están en `requirements.txt` y son `pandas`, `requests`, `beautifulsoup4` y `tabulate`.

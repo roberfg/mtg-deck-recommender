@@ -26,15 +26,15 @@ El periodo de análisis está fijado en los últimos 30 días y no requiere opci
 
 En cada ejecución se generan:
 
-- `deck_data_<format>.csv`: todas las filas extraídas de MTGDecks, incluidos los precios `Paper` y `MTGO`.
-- `deck_analysis_<format>.csv`: filas válidas con las puntuaciones y el IVC.
-- `exports/deck_recommendations.md`: informe Markdown predeterminado con las recomendaciones y el ranking completo de todos los formatos.
-- `exports/deck_recommendations_cheap.md`: informe Markdown generado con `--cheap`.
-- `exports/deck_recommendations_best.md`: informe Markdown generado con `--best`.
+- `exports/deck_data_<format>.csv`: todas las filas extraídas de MTGDecks, incluidos los precios `Paper` y `MTGO`.
+- `exports/deck_analysis_<format>_cheap.csv` y `exports/deck_analysis_<format>_best.csv`: filas válidas con las puntuaciones y el IVC de cada perfil.
+- `exports/deck_recommendations_cheap.md`: informe Markdown del perfil de precio (`cheap`).
+- `exports/deck_recommendations_best.md`: informe Markdown del perfil competitivo (`best`).
+- `exports/deck_recommendations_final.md`: informe Markdown que combina ambos perfiles y da una recomendación final por formato.
 
 Estos archivos están excluidos de Git mediante `.gitignore`.
 
-La salida de terminal muestra la recomendación principal, una segunda recomendación y los 10 primeros puestos. Los informes Markdown conservan el ranking completo de mazos válidos.
+La salida de terminal muestra la recomendación principal, una segunda recomendación y los 10 primeros puestos. Los informes Markdown solo contienen el resumen y las recomendaciones; el ranking completo y los datos extraídos están en los CSV de `exports/`.
 
 ## Filtrado y cálculo
 
